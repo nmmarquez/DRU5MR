@@ -1,0 +1,181 @@
+---
+output:
+    html_document:
+        includes:
+            in_header: assets/huskyheader.html
+            before_body: assets/huskynavbar.html
+---
+
+# Model Construction From Estimating Under Five Mortality in Space and Time in a Developing World Context
+
+```{r echo=F, warning=F, message=F}
+rm(list=ls())
+set.seed(123)
+library(memisc)
+library(tidyverse)
+library(haven)
+library(rgdal)
+library(sp)
+library(maptools)
+library(PointPolygon)
+library(sf)
+
+ageGroups <- c(0, 1/12, 1, 2, 3, 4, 5)
+
+micsDF <- "~/Documents/DRExplore/Data/bh.sav"  %>%
+    read_spss() %>%
+    rename(Region = HH7, PSU = HH1, `Birth(CMC)` = BH4C) %>%
+    mutate(Urban = HH6=="1") %>%
+    mutate(strat = paste0(sprintf("%02d", Region), "_", HH6)) %>%
+    mutate(Alive = BH5 == "1") %>%
+    mutate(`Age at Death` = c(1/365, 1/12, 1)[BH9U] * BH9N) %>%
+    mutate(`Year of Birth` = BH4Y) %>%
+    mutate(`Year at Death` = floor(`Age at Death`) + `Year of Birth`) %>%
+    filter(`Year of Birth` <= 2018 & `Year of Birth` >= 1996) %>%
+    mutate(`Age Group at Death` = cut(`Age at Death`, ageGroups, right=F))
+
+aggDF <- "~/Documents/re_simulations/ppp/data/DRdata.csv" %>%
+    read_csv(col_types="ccdcidcddccddidcdc")
+
+```
+
+This document is a brief overview of the model adaptation that was originally presented in "Estimating Under Five Mortality in Space and Time in a Developing World Context". The paper itself goes into more detail on the shared components of the model such as the shared effects of the $\text{RW2}$ parameters and the jointly modeled age effects however only the primary components of the model which are relevant for adaption to an areal data context are detailed here.
+
+## Original Model Formulation  
+
+$$
+m = \text{month} \\
+a = \text{age group} \\
+k = \text{survey} \\
+l = \text{location} \\
+j = \text{cluster} \\
+t = \text{year} \\
+\boldsymbol{s}_j = \text{cluster location}\\
+$$
+
+$$
+Y_{m,k}(\boldsymbol{s}_j,t) | ~_1q_{m,k}(\boldsymbol{s}_j, t)
+    \sim \text{Bernoulli} [~_1q_{m,k}(\boldsymbol{s}_j, t)] \\
+\text{logit}[~_1q_{m,k}(\boldsymbol{s}_j, t)] =
+    \text{log}(\text{BIAS}_{l[\boldsymbol{s}_j],k}(t)) +
+    \beta_{a[m]}(\boldsymbol{s}_j, t) + \eta_j + \nu_k + \epsilon_t \\
+\beta_{a[m]}(\boldsymbol{s}_j, t) = \beta_{a[m]} +
+    \delta_{\text{str}[\boldsymbol{s}_j]} + \phi_a(t) +
+    \mu(\boldsymbol{s}_j, t) \\
+\phi_a \sim \text{RW2}(\tau_a) \\
+\mu(\boldsymbol{s}_j,t) \sim \text{MVN}(0, Q^{-1}) \\
+Q = Q^{\text{AR1}}\otimes Q^{\mathcal{M}}
+$$
+
+As stated in the original paper the model is amendable to the inclusion of covariates and the only restriction being that sample clusters need to be spatially designated to a point, the designation of space into an areas urban and rural sectors should be known, and full birth histories should be used for mothers interviewed with child mortality recorded to the month if it does occur before the age of 5.
+
+## Data from the Dominican Republic  
+
+Several survey attempts have been made to collect representative complete birth history data from the Dominican Republic(DR). The Demographic and Health Survey (DHS) data collection effort has conducted 2 subnational surveys in the DR since 2005. Both of these surveys are representative at the subnational level and have geotagged locations for the clusters that have been surveyed. Both of these surveys use a well defined definition of Urban and Rural that is taken from the most recent census and is freely available on the [Oficina Nacional de Estadistica website](https://www.one.gob.do). In addition both surveys include complete birth histories for all woman surveyed allowing for simple accommodation to the model defined in Wakefield et al.
+
+In addition to these two surveys an additional more widespread, larger sample survey has been conducted through the Multiple Indicator Cluster Survey (MICS) research group. MICS have been able to survey a much wider audience than previous survey endeavors at the expense of the breadth of the questions asked, however, complete birth histories are collected. Though these surveys are also subnationally representative and use a well defined urban-rural stratification scheme, the geotagged locations of the clusters from surveys are not recorded and only the stratification of the cluster is given. A breakdown of the sample sizes and locations of the MICS and DHS surveys are shown below.
+
+```{r echo=F, warning=F, message=F}
+aggDF %>%
+    filter(ab == "NN") %>%
+    group_by(Title) %>%
+    summarize(`Births Recorded`=sum(N)) %>%
+    filter(!grepl("Multipurpose|2002", Title)) %>%
+    rename(Survey = Title) %>%
+    mutate(Geotagged=!grepl("Multiple", Survey)) %>%
+    knitr::kable(caption="Number of Live Births Observed in Data 2000-2015")
+```
+
+```{r echo=F, warning=F, message=F}
+admin1Codes <- aggDF %>%
+    filter(shapefile == "admin2013_1") %>%
+    select(location_code) %>%
+    unique %>%
+    unlist %>%
+    unname
+shapeADMIN <- st_read("~/Documents/re_simulations/ppp/data/admin2013_1.shp", quiet=T)
+shapeADMINDR <- shapeADMIN[shapeADMIN$GAUL_CODE %in% admin1Codes,]
+
+shapeFiles <- grep("DOM", unique(aggDF$shapefile), value=T)
+shapeList <- c(
+    list(shapeADMINDR),
+    lapply(
+        paste0("~/Documents/re_simulations/ppp/data/", shapeFiles, ".shp"),
+        st_read,
+        quiet=T))
+names(shapeList) <- c("admin2013_1", shapeFiles)
+
+# for right now lets just plot the data that we do have
+pointSFDF <- aggDF %>%
+    filter(!is.na(longnum)) %>%
+    st_as_sf(
+        coords = c("longnum", "latnum"),
+        crs = "+proj=longlat +datum=WGS84 +no_defs") %>%
+    st_combine
+
+# No :(
+dataGeoPlot <- ggplot(pointSFDF) +
+    geom_sf(data=shapeADMINDR) +
+    geom_sf(size=.2, alpha=.3) +
+    theme_classic() +
+    ggtitle("Dominican Republic Gelocated Survey Data: DHS 2007 & 2013")
+
+dataCountList <- lapply(names(shapeList), function(spn){
+    countDF <- aggDF %>%
+        filter(ab == "NN") %>%
+        group_by(shapefile, GAUL_CODE) %>%
+        summarize(obsCount=sum(N)) %>%
+        filter(shapefile == spn) %>%
+        ungroup %>%
+        select(-shapefile)
+    left_join(shapeList[[spn]], countDF, by="GAUL_CODE") %>%
+        mutate(set=spn) %>%
+        select(set, GAUL_CODE, obsCount, geometry)
+})
+
+names(dataCountList) <- names(shapeList)
+
+dataGeoPlot
+
+dataCountList$DOM_MICS_2014 %>%
+    rename(`Live Births`=obsCount) %>%
+    ggplot(aes(fill=`Live Births`)) +
+    geom_sf() +
+    scale_fill_distiller(palette="Spectral") +
+    labs(fill="Live Births") +
+    theme_classic() +
+    ggtitle("Dominican Republic Areal Survey Data: MICS 2014")
+```
+
+## Modified Areal Data Formulation  
+
+If we believe that data come from an underlying data generation as stated in the model formulation above then using areal data as part of the model estimation process should be feasible, provided that we properly account for the stochastic process. Each areal unit in the MICS, a unique region urban/rural stratification combination, is composed of a number of Enumeration Areas, the smallest units from the most recent census. These Enumeration Areas are sampled to be representative of a stratification and are considered the primary sampling unit (PSU) or cluster. From there a number of households are selected to be representative of that enumeration area and woman are interviewed in the household about their birth histories.
+
+Given this survey strategy we may say each cluster comes from a convolution of binomials, where we know that there are a number of possible locations to pull from within a stratification and the probability of being selected from that location given that the location is in a given stratification is simply $p_{\boldsymbol{s}_n,t}$. Using this approach we may incorporate data from both the DHS and the MICS in a joint modeling process.
+
+$$
+Y_{m,k}(\mathcal{A}_j,t) | ~_1q_{m,k}(\mathcal{A}_j, t), N_{j,t}
+    \sim \text{Convolution Binomial} [~_1q_{m,k}(\mathcal{A}_j, t), N_{j,t}] \\
+$$
+
+$$
+\begin{aligned}
+\text{Convolution Binomial} [~_1q_{m,k}(\mathcal{A}_j, t), N_{j,t}] =
+\begin{cases}
+\text{Binomial} [~_1q_{m,k}(\boldsymbol{s}_1, t), N_{1,t}] \times p_{\boldsymbol{s}_1,t} \\
+\vdots \\
+\text{Binomial} [~_1q_{m,k}(\boldsymbol{s}_n, t), N_{n,t}] \times p_{\boldsymbol{s}_n,t}
+\end{cases}
+\end{aligned}
+$$
+
+$$
+~_1q_{m,k}(\mathcal{A}_j, t) = \{~_1q_{m,k}(\boldsymbol{s}_1, t), ...,
+    ~_1q_{m,k}(\boldsymbol{s}_n, t) \} \\
+\text{logit}[~_1q_{m,k}(\boldsymbol{s}_i, t)] =
+    \text{log}(\text{BIAS}_{l[\boldsymbol{s}_i],k}(t)) +
+    \beta_{a[m]}(\boldsymbol{s}_i, t) + \eta_j + \nu_k + \epsilon_t \\
+\beta_{a[m]}(\boldsymbol{s}_i, t) = \beta_{a[m]} +
+    \delta_{\text{str}[\boldsymbol{s}_i]} + \phi_a(t) +
+    \mu(\boldsymbol{s}_i, t) \\
+$$

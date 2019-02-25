@@ -312,10 +312,11 @@ fullRaster$ZONA <- if_else(fullRaster$urban==1, "1", "2")
 fullRaster$strat <- paste0(
     sprintf("%02d", fullRaster$reg), "_", fullRaster$ZONA)
 
-polyDF <- as_tibble(sp::coordinates(fullRaster)) %>%
+fullDF <- as_tibble(sp::coordinates(fullRaster)) %>%
     rename(long=V1, lat=V2) %>%
     bind_cols(select(fullRaster@data, reg, urban, id)) %>%
-    mutate(strat = paste0(sprintf("%02d", reg), "_", urban))
+    mutate(strat = paste0(sprintf("%02d", reg), "_", urban)) %>%
+    mutate(long=round(long, 5), lat=round(lat, 5))
 
 # now that we have assigned all of the points lets assign each of the points in
 # the DHS to their corresponding id
@@ -396,5 +397,10 @@ yearWMat <- matrix(
     nrow=nrow(popYearDFList[[1]]@data), 
     ncol = length(years))
 
-save(yearWMat, yearWDF, polyDF, pointDF, spDF,
+plot(meshDR <- INLA::inla.mesh.2d(
+    loc=bbCoords(spDF), 
+    offset = c(5000, 10000),
+    max.edge = c(1000,10000)))
+
+save(yearWMat, yearWDF, polyDF, pointDF, spDF, fullDF,
      file="./Data/prepData.Rdata")

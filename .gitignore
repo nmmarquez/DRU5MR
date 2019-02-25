@@ -3,7 +3,8 @@
 .Rapp.history
 
 # Everything in Data folder
-Data/
+data/
+data-extended/
 
 # Session Data files
 .RData

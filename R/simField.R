@@ -35,13 +35,9 @@
 #'     coord_equal() +
 #'     theme_void() +
 #'     scale_fill_distiller(palette = "Spectral")
+#'}
 #'
 #' @export
-
-
-rm(list=ls())
-
-load("./Data/prepData.Rdata")
 
 simField <- function(
     M,

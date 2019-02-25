@@ -1,0 +1,4 @@
+^data-extended$
+^R-docs$
+^.*\.Rproj$
+^\.Rproj\.user$

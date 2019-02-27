@@ -1,0 +1,20 @@
+---
+title: "Next Steps"
+author: "Neal Marquez"
+date: "February 25, 2019"
+output: html_document
+---
+
+## Finished  
+ - Simulation Function Built  
+ - Vary random and fixed parameters  
+ - Vary Spatial extent parameter to test mixture model  
+ 
+## To Do  
+ - Build up spatial temporal model  
+ - Do is use all data at once or break them up by cluster groups?  
+ - Modeling scenarios should include  
+   - Vary spatial extent  
+   - Simulate outcomes using refernces from survey data ie clusters from MICS and DHS
+   - Use the births from each cluster,year and simulate through age groups.
+   - Use only point, only polygon, and both types of data. 

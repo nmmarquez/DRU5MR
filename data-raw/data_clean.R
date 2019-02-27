@@ -176,7 +176,7 @@ smartResample <- function(x, y, method="bilinear", filename="", ...)  {
 # dhsDF <- "./Data/DRBR52FL.SAV" %>%
 #     read_spss
 
-DF <- "./Data/bh.sav"  %>%
+DF <- "./data-extended/bh.sav"  %>%
     read_spss() %>%
     rename(Region = HH7, PSU = HH1, `Birth(CMC)` = BH4C) %>%
     mutate(Urban = HH6=="1") %>%
@@ -227,11 +227,12 @@ micsDF <- bind_rows(lapply(1:nrow(DF), function(i){
     summarize(N=n(), died=sum(died)) %>%
     mutate(lat=NA, long=NA, source="MICS_2014") %>%
     ungroup %>%
-    filter(year >= min(years)) %>%
+    filter(year >= min(years) & year <= 2014) %>%
     mutate(psu = as.character(psu)) %>%
     mutate(source = 
                "Dominican Republic Multiple Indicator Cluster Survey 2014") %>%
-    mutate(urban = str_sub(strat, -1, -1) == "1")
+    mutate(urban = str_sub(strat, -1, -1) == "1") %>%
+    filter(!(year == 2014 & (age_group %in% c("PNN1", "PNN2"))))
 
 sources <- c(
     "Dominican Republic Demographic and Health Survey 2007",
@@ -239,7 +240,8 @@ sources <- c(
     "Dominican Republic Multiple Indicator Cluster Survey 2014"
 )
 
-ihmeDF <- read_csv("./Data/DRdata.csv", col_types="ccdcidcddccddidcdc") %>%
+ihmeDF <- "./data-extended/DRdata.csv" %>%
+    read_csv(col_types="ccdcidcddccddidcdc") %>%
     mutate(strat=NA) %>%
     select(
         age_group=ab, year, strat, psu=geo_unit, 
@@ -248,10 +250,12 @@ ihmeDF <- read_csv("./Data/DRdata.csv", col_types="ccdcidcddccddidcdc") %>%
 
 
 # theres a huge difference here need to ask why that is
-sum(ihmeDF$N[grepl("Cluster Survey", ihmeDF$source)]) - sum(micsDF$N)
+sum(ihmeDF$N[grepl("Cluster Survey", ihmeDF$source) & ihmeDF$year < 2015]) - 
+    sum(micsDF[micsDF$year < 2015,]$N)
 
 # load in the shape and use this to get the urban rural of points
-spDF <- spTransform(readOGR("./Data/SECCenso2010.dbf"), CRS("+proj=longlat"))
+spDF <- readOGR("./data-extended/SECCenso2010.dbf") %>%
+    spTransform(CRS("+proj=longlat"))
 spDF$strat <- paste0(spDF$REG, "_", spDF$ZONA)
 spDF$urban <- spDF$ZONA == "1"
 
@@ -285,20 +289,20 @@ assignLoc <- function(locsDF, shape, ZONA=TRUE){
     results
 }
 
-if(!file.exists("./Data/dhsDF.Rds")){
+if(!file.exists("./data-extended/dhsDF.Rds")){
     dhsDF <- ihmeDF %>%
         filter(!grepl("Cluster Survey", ihmeDF$source)) %>%
         mutate(urban=assignLoc(., spDF))
     
-    saveRDS(dhsDF, "./Data/dhsDF.Rds")
+    saveRDS(dhsDF, "./data-extended/dhsDF.Rds")
 }
 
-dhsDF <- read_rds("./Data/dhsDF.Rds")
+dhsDF <- read_rds("./data-extended/dhsDF.Rds")
 
 # the last step is to convert to a sufficiently detailed raster
 # we will then convert this raster to point data as used in the PointPolygon
 # package.
-rbase <- raster(ncol=500, nrow=500)
+rbase <- raster(ncol=750, nrow=750)
 extent(rbase) <- extent(spDF)
 rasterRegSP <- rasterize(spDF, rbase, 'REG')
 rasterUrbanSP <- rasterize(spDF, rbase, 'urban')
@@ -315,31 +319,33 @@ fullRaster$strat <- paste0(
 fullDF <- as_tibble(sp::coordinates(fullRaster)) %>%
     rename(long=V1, lat=V2) %>%
     bind_cols(select(fullRaster@data, reg, urban, id)) %>%
-    mutate(strat = paste0(sprintf("%02d", reg), "_", urban)) %>%
+    mutate(strat = paste0(sprintf("%02d", reg), "_", 2-urban)) %>%
     mutate(long=round(long, 5), lat=round(lat, 5))
 
 # now that we have assigned all of the points lets assign each of the points in
 # the DHS to their corresponding id
 
-if(!file.exists("./Data/dhsClusterDF.Rds")){
+if(!file.exists("./data-extended/dhsClusterDF.Rds")){
     dhsClusterDF <- dhsDF %>%
         select(psu, lat, long) %>%
         unique %>%
         mutate(id = assignLoc(., fullRaster, ZONA=FALSE))
     
-    saveRDS(dhsClusterDF, "./Data/dhsClusterDF.Rds")
+    saveRDS(dhsClusterDF, "./data-extended/dhsClusterDF.Rds")
 }
 
-dhsClusterDF <- read_rds("./Data/dhsClusterDF.Rds") %>%
+dhsClusterDF <- read_rds("./data-extended/dhsClusterDF.Rds") %>%
     select(psu, id)
 
 idSubs <- mapply(function(i, j){
     suDF <- subset(fullRaster@data, strat == paste0(sprintf("%02d", i), "_", j))
     suDF$id
-}, 1:10, 1:2)
+}, rep(1:10, each=2), rep(1:2, 10))
 
 polyDF <- tibble(
-    strat = mapply(function(i,j) paste0(sprintf("%02d", i), "_", j), 1:10, 1:2),
+    strat = mapply(
+        function(i,j) paste0(sprintf("%02d", i), "_", j), 
+        rep(1:10, each=2), rep(1:2, 10)),
     id = idSubs) %>%
     right_join(micsDF, by="strat") %>%
     mutate(point=FALSE)
@@ -368,13 +374,30 @@ wgetRasterYear <- function(year, loc="DOM"){
 }
 
 
-if(!file.exists("./Data/rasterYearList.Rds")){
+if(!file.exists("./data-extended/rasterYearList.Rds")){
     rasterYearList <- lapply(years, wgetRasterYear)
-    saveRDS(rasterYearList, "./Data/rasterYearList.Rds")
+    saveRDS(rasterYearList, "./data-extended/rasterYearList.Rds")
 }
 
-rasterYearList <- read_rds("./Data/rasterYearList.Rds")
+rasterYearList <- read_rds("./data-extended/rasterYearList.Rds")
 names(rasterYearList) <- years
+
+popYearDFList <- lapply(years, function(x) NULL)
+names(popYearDFList) <- as.character(years)
+
+for(y in years){
+    rDF <- rasterToPolygons(rasterYearList[[as.character(y)]])
+    rDF$Population <- rDF$layer
+    rDF$layer <- NULL
+    rDF$id <- 1:nrow(rDF@data)
+    rDF@data <- left_join(rDF@data, select(fullRaster@data, id, strat)) %>%
+        group_by(strat) %>%
+        mutate(popW=Population/sum(Population)) %>%
+        ungroup %>%
+        mutate(year=y)
+    popYearDFList[[as.character(y)]] <- rDF
+    rm(list=c("rDF"))
+}
 
 popYearDFList <- lapply(years, function(y){
     rDF <- rasterToPolygons(rasterYearList[[as.character(y)]])
@@ -396,11 +419,6 @@ yearWMat <- matrix(
     c(yearWDF$popW), 
     nrow=nrow(popYearDFList[[1]]@data), 
     ncol = length(years))
-
-plot(meshDR <- INLA::inla.mesh.2d(
-    loc=bbCoords(spDF), 
-    offset = c(5000, 10000),
-    max.edge = c(1000,10000)))
 
 save(yearWMat, yearWDF, polyDF, pointDF, spDF, fullDF,
      file="./Data/prepData.Rdata")

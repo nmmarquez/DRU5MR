@@ -420,5 +420,5 @@ yearWDF %>%
     scale_fill_distiller(palette = "Spectral") +
     ggtitle("")
 
-save(yearWMat, yearWDF, polyDF, pointDF, spDF, fullDF,
+save(yearWDF, polyDF, pointDF, spDF, fullDF,
      file="./data/prepData.rda")

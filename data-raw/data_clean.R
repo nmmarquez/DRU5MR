@@ -368,8 +368,8 @@ wgetRaster <- function(year, age, sex, loc="DOM"){
 wgetRasterYear <- function(year, loc="DOM"){
     rasterList <- mapply(
         function(i, j) wgetRaster(year, i, j, loc),
-        c(0, 1),
-        c("Male", "Female"))
+        c(0, 1, 0, 1),
+        c("Male", "Male", "Female", "Female"))
     Reduce("+", rasterList)
 }
 
@@ -385,6 +385,8 @@ names(rasterYearList) <- years
 popYearDFList <- lapply(years, function(x) NULL)
 names(popYearDFList) <- as.character(years)
 
+# the number of filled points dont match the urban rural rasters so this isnt
+# going to work, We need to change this step
 for(y in years){
     rDF <- rasterToPolygons(rasterYearList[[as.character(y)]])
     rDF$Population <- rDF$layer

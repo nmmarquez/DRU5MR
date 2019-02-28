@@ -1,9 +1,9 @@
 rm(list=ls())
-
 library(DRU5MR)
 library(PointPolygon)
 library(tidyverse)
 library(sp)
+set.seed(123)
 
 # Im dumb and need to fix this in the creation code
 fullDF <- fullDF %>%
@@ -23,22 +23,12 @@ nPSU <- polyDF %>%
     filter(age_group == "NN") %>% 
     group_by(strat, psu) %>%
     summarize(n=sum(N)) %>%
-    summarise(nPSU=n(), briths=round(mean(n)))
+    summarise(nPSU=n(), births=round(mean(n)))
 
 stratSPDF <- maptools::unionSpatialPolygons(spDF, spDF$strat)
 stratSPDF$strat <- names(stratSPDF)
 stratSPDF$polyid <- 1:nrow(stratSPDF@data)
 stratList <- lapply(1:length(stratSPDF), function(i) stratSPDF[i,])
-
-unitSim <- PointPolygon::simField(
-    N = 100, # use 500 squares as base field just as in example
-    sigmaE = .12, # unit variance for spde process
-    rangeE = .7,
-    shape = spDF, # null shape which by default creates unit square
-    beta0 = -3.5, # intercept 
-    link = arm::invlogit,
-    offset = 1.,
-    max.edge = c(.15,.3))
 
 drSim <- list()
 
@@ -75,7 +65,12 @@ drSim$spdf <- sp::SpatialPointsDataFrame(
     data = fullDF %>%
         rename(x=long, y=lat) %>%
         mutate(id=id-1, Bound=1, V0=1, z=z) %>%
-        mutate(theta=arm::invlogit(-3.5 + z))
+        mutate(theta=arm::invlogit(-3.5 + z)) %>%
+        left_join(
+            yearWDF %>%
+                filter(year == 2015 & !is.na(strat)) %>%
+                mutate(id = id-1) %>%
+                select(-year))
 )
 
 drSim$latent <- x
@@ -89,6 +84,39 @@ drSim$spdf@data %>%
     scale_fill_distiller(palette = "Spectral") +
     ggtitle("")
 
-# for each stratification sample population weighted 
+samplePolygons
 
+
+simPolyDF <- bind_rows(lapply(nPSU$strat, function(s){
+    snPSU <- nPSU$nPSU[nPSU$strat == s]
+    snSamp <- nPSU$births[nPSU$strat == s]
+    subDF <- drSim$spdf@data %>%
+        filter(strat == s)
+    sampleDF <- tibble(id = sample(subDF$id, snPSU, TRUE, subDF$popW)) %>%
+        left_join(subDF, by="id") %>%
+        mutate(trials=snSamp, obs=rbinom(n(), trials, theta)) %>%
+        mutate(polyid=which(s == nPSU$strat))
+    sampleDF
+}))
+
+str(test)
+
+# for each stratification sample population weighted
 test <- samplePolygons(drSim, 10, polygonList = stratList)
+
+drSim$spdf@data %>%
+    ggplot(aes(x, y, fill=theta)) +
+    geom_raster() +
+    coord_equal() +
+    theme_void() +
+    scale_fill_distiller(palette = "Spectral") +
+    ggtitle("") +
+    geom_point(aes(x=x, y=y, fill=NULL), data=simPolyDF)
+
+drSim$spdf@data %>%
+    ggplot(aes(x, y, fill=Population)) +
+    geom_raster() +
+    coord_equal() +
+    theme_void() +
+    scale_fill_distiller(palette = "Spectral") +
+    ggtitle("Population")

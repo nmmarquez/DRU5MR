@@ -13,6 +13,7 @@ library(PointPolygon)
 library(rgeos)
 library(raster)
 library(tidyverse)
+library(Rcpp)
 
 years <- 2000:2015
 ageGroups <- c(0, NN=1/12, PNN1=1/2, PNN2=1, `1yr`=2, `2yr`=3, `3yr`=4, `4yr`=5)
@@ -172,6 +173,25 @@ smartResample <- function(x, y, method="bilinear", filename="", ...)  {
     return(y)
 }
 
+# rcpp distance functions
+sourceCpp("./R-docs/dist.cpp")
+
+find_closest <- function(x1, x2) {
+    
+    toRad <- pi / 180
+    lat1  <- x1[,2]  * toRad
+    long1 <- x1[,1] * toRad
+    lat2  <- x2[,2]  * toRad
+    long2 <- x2[,1] * toRad
+    
+    ord1  <- order(lat1)
+    rank1 <- match(seq_along(lat1), ord1)
+    ord2  <- order(lat2)
+    
+    ind <- find_closest_point(lat1[ord1], long1[ord1], lat2[ord2], long2[ord2])
+    
+    fullDF$id[ord2[ind + 1][rank1]]
+}
 
 # dhsDF <- "./Data/DRBR52FL.SAV" %>%
 #     read_spss
@@ -259,36 +279,6 @@ spDF <- readOGR("./data-extended/SECCenso2010.dbf") %>%
 spDF$strat <- paste0(spDF$REG, "_", spDF$ZONA)
 spDF$urban <- spDF$ZONA == "1"
 
-# because of the jitter we get some NA so lets recode those to the nearest poly
-assignLoc <- function(locsDF, shape, ZONA=TRUE){
-    locMatSPDF <- select(locsDF, long, lat) %>%
-        as.matrix %>%
-        SpatialPoints(CRS("+proj=longlat"))
-    resultsDF <- locMatSPDF %>%
-        over(spTransform(shape, CRS("+proj=longlat")))
-    if(ZONA){
-        results <- resultsDF$ZONA == "1"
-    }
-    else{
-        results <- resultsDF$id
-    }
-    
-    for(i in 1:length(results)){
-        if(is.na(results[i])){
-            m_ <- which.min(gDistance(
-                locMatSPDF[i,], 
-                spTransform(shape, CRS("+proj=longlat")), byid=T))
-            if(ZONA){
-                results[i] <- shape$ZONA[m_] == "1"
-            }
-            else{
-                results[i] <- shape$id[m_]
-            }
-        }
-    }
-    results
-}
-
 if(!file.exists("./data-extended/dhsDF.Rds")){
     dhsDF <- ihmeDF %>%
         filter(!grepl("Cluster Survey", ihmeDF$source)) %>%
@@ -302,14 +292,16 @@ dhsDF <- read_rds("./data-extended/dhsDF.Rds")
 # the last step is to convert to a sufficiently detailed raster
 # we will then convert this raster to point data as used in the PointPolygon
 # package.
-rbase <- raster(ncol=750, nrow=750)
+rbase <- raster(ncol=600, nrow=600)
 extent(rbase) <- extent(spDF)
 rasterRegSP <- rasterize(spDF, rbase, 'REG')
+values(rasterRegSP)[is.na(values(rasterRegSP))] <- -1
 rasterUrbanSP <- rasterize(spDF, rbase, 'urban')
+values(rasterUrbanSP)[is.na(values(rasterUrbanSP))] <- -1
 
-fullRaster <- rasterToPolygons(rasterRegSP)
+fullRaster <- as(rasterRegSP, "SpatialPointsDataFrame")
 fullRaster$reg <- fullRaster$layer
-fullRasterUrban <- rasterToPolygons(rasterUrbanSP)
+fullRasterUrban <- as(rasterUrbanSP, "SpatialPointsDataFrame")
 fullRaster$urban <- fullRasterUrban$layer
 fullRaster$id <- 1:nrow(fullRaster@data)
 fullRaster$ZONA <- if_else(fullRaster$urban==1, "1", "2")
@@ -317,24 +309,21 @@ fullRaster$strat <- paste0(
     sprintf("%02d", fullRaster$reg), "_", fullRaster$ZONA)
 
 fullDF <- as_tibble(sp::coordinates(fullRaster)) %>%
-    rename(long=V1, lat=V2) %>%
+    rename(long=x, lat=y) %>%
     bind_cols(select(fullRaster@data, reg, urban, id)) %>%
     mutate(strat = paste0(sprintf("%02d", reg), "_", 2-urban)) %>%
-    mutate(long=round(long, 5), lat=round(lat, 5))
+    mutate(long=round(long, 5), lat=round(lat, 5)) %>%
+    filter(reg >= 0 & urban >= 0)
 
 # now that we have assigned all of the points lets assign each of the points in
 # the DHS to their corresponding id
 
-if(!file.exists("./data-extended/dhsClusterDF.Rds")){
-    dhsClusterDF <- dhsDF %>%
-        select(psu, lat, long) %>%
-        unique %>%
-        mutate(id = assignLoc(., fullRaster, ZONA=FALSE))
-    
-    saveRDS(dhsClusterDF, "./data-extended/dhsClusterDF.Rds")
-}
-
-dhsClusterDF <- read_rds("./data-extended/dhsClusterDF.Rds") %>%
+dhsClusterDF <- dhsDF %>%
+    select(psu, lat, long) %>%
+    unique %>%
+    mutate(id=find_closest(
+        as.matrix(select(. , long, lat)),
+        as.matrix(fullDF[,1:2]))) %>%
     select(psu, id)
 
 idSubs <- mapply(function(i, j){
@@ -353,6 +342,15 @@ polyDF <- tibble(
 pointDF <- dhsDF %>%
     left_join(dhsClusterDF, by="psu") %>%
     mutate(point=TRUE)
+
+fullDF %>%
+    ggplot(aes(long, lat, fill=reg)) +
+    geom_raster() +
+    coord_equal() +
+    theme_void() +
+    scale_fill_distiller(palette = "Spectral") +
+    ggtitle("") +
+    geom_point(aes(fill=NULL), data=pointDF)
 
 # Next we are going to want to build the population rasters
 
@@ -388,11 +386,14 @@ names(popYearDFList) <- as.character(years)
 # the number of filled points dont match the urban rural rasters so this isnt
 # going to work, We need to change this step
 for(y in years){
-    rDF <- rasterToPolygons(rasterYearList[[as.character(y)]])
+    rDF <- rasterYearList[[as.character(y)]]
+    values(rDF)[is.na(values(rDF))] <- -1
+    rDF <- as(rDF, "SpatialPointsDataFrame")
     rDF$Population <- rDF$layer
     rDF$layer <- NULL
     rDF$id <- 1:nrow(rDF@data)
-    rDF@data <- left_join(rDF@data, select(fullRaster@data, id, strat)) %>%
+    rDF@data <- right_join(rDF@data, select(fullDF, id, strat)) %>%
+        mutate(Population=ifelse(Population < 0, 0, Population)) %>%
         group_by(strat) %>%
         mutate(popW=Population/sum(Population)) %>%
         ungroup %>%
@@ -400,19 +401,6 @@ for(y in years){
     popYearDFList[[as.character(y)]] <- rDF
     rm(list=c("rDF"))
 }
-
-popYearDFList <- lapply(years, function(y){
-    rDF <- rasterToPolygons(rasterYearList[[as.character(y)]])
-    rDF$Population <- rDF$layer
-    rDF$layer <- NULL
-    rDF$id <- 1:nrow(rDF@data)
-    rDF@data <- left_join(rDF@data, select(fullRaster@data, id, strat)) %>%
-        group_by(strat) %>%
-        mutate(popW=Population/sum(Population)) %>%
-        ungroup %>%
-        mutate(year=y)
-    rDF
-})
 
 yearWDF <- bind_rows(lapply(popYearDFList, function(x)x@data)) %>% 
     arrange(year, id)
@@ -422,5 +410,15 @@ yearWMat <- matrix(
     nrow=nrow(popYearDFList[[1]]@data), 
     ncol = length(years))
 
+yearWDF %>%
+    filter(year == 2014) %>%
+    right_join(fullDF) %>%
+    ggplot(aes(long, lat, fill=Population)) +
+    geom_raster() +
+    coord_equal() +
+    theme_void() +
+    scale_fill_distiller(palette = "Spectral") +
+    ggtitle("")
+
 save(yearWMat, yearWDF, polyDF, pointDF, spDF, fullDF,
-     file="./Data/prepData.Rdata")
+     file="./data/prepData.rda")

@@ -279,16 +279,6 @@ spDF <- readOGR("./data-extended/SECCenso2010.dbf") %>%
 spDF$strat <- paste0(spDF$REG, "_", spDF$ZONA)
 spDF$urban <- spDF$ZONA == "1"
 
-if(!file.exists("./data-extended/dhsDF.Rds")){
-    dhsDF <- ihmeDF %>%
-        filter(!grepl("Cluster Survey", ihmeDF$source)) %>%
-        mutate(urban=assignLoc(., spDF))
-    
-    saveRDS(dhsDF, "./data-extended/dhsDF.Rds")
-}
-
-dhsDF <- read_rds("./data-extended/dhsDF.Rds")
-
 # the last step is to convert to a sufficiently detailed raster
 # we will then convert this raster to point data as used in the PointPolygon
 # package.
@@ -318,7 +308,8 @@ fullDF <- as_tibble(sp::coordinates(fullRaster)) %>%
 # now that we have assigned all of the points lets assign each of the points in
 # the DHS to their corresponding id
 
-dhsClusterDF <- dhsDF %>%
+dhsClusterDF <- ihmeDF %>%
+    filter(!grepl("Cluster Survey", ihmeDF$source)) %>%
     select(psu, lat, long) %>%
     unique %>%
     mutate(id=find_closest(
@@ -339,9 +330,11 @@ polyDF <- tibble(
     right_join(micsDF, by="strat") %>%
     mutate(point=FALSE)
 
-pointDF <- dhsDF %>%
+pointDF <- ihmeDF %>%
+    filter(!grepl("Cluster Survey", ihmeDF$source)) %>%
     left_join(dhsClusterDF, by="psu") %>%
-    mutate(point=TRUE)
+    left_join(select(fullDF, id, urban), by="id") %>%
+    mutate(point=TRUE) 
 
 fullDF %>%
     ggplot(aes(long, lat, fill=reg)) +

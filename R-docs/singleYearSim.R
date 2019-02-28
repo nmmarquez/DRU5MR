@@ -1,5 +1,4 @@
 rm(list=ls())
-library(DRU5MR)
 library(PointPolygon)
 library(tidyverse)
 library(sp)
@@ -78,7 +77,7 @@ drSim$spdf@data %>%
 
 simPolyDF <- bind_rows(lapply(nPSU$strat, function(s){
     snPSU <- nPSU$nPSU[nPSU$strat == s]
-    snSamp <- nPSU$births[nPSU$strat == s]
+    snSamp <- nPSU$births[nPSU$strat == s] * 10
     subDF <- drSim$spdf@data %>%
         filter(strat == s)
     sampleDF <- tibble(id = sample(subDF$id, snPSU, TRUE, subDF$popW)) %>%
@@ -95,7 +94,7 @@ drSim$spdf@data %>%
     theme_void() +
     scale_fill_distiller(palette = "Spectral") +
     ggtitle("") +
-    geom_point(aes(x=x, y=y, fill=NULL), data=simPolyDF)
+    geom_point(aes(x=x, y=y, fill=NULL), data=simPolyDF, size=.1, alpha=.3)
 
 drSim$spdf@data %>%
     ggplot(aes(x, y, fill=Population)) +

@@ -1,10 +1,14 @@
+.libPaths(c("~/R3.5/", .libPaths()))
 rm(list=ls())
 library(PointPolygon)
-library(tidyverse)
+library(dplyr)
+library(tibble)
 library(sp)
+library(ggplot2)
+library(TMB)
 set.seed(123)
 
-load("./data/prepData.rda")
+load("~/Documents/DRU5MR/data/prepData.rda")
 
 # Im dumb and need to fix this in the creation code
 fullDF <- fullDF %>%
@@ -26,7 +30,7 @@ drSim <- list()
 drSim$mesh <- INLA::inla.mesh.2d(
     loc=bbCoords(spDF), 
     offset = 1.,
-    max.edge = c(.15, .3))
+    max.edge = c(.3, .6))
 
 drSim$AprojField <- INLA::inla.spde.make.A(
     mesh=drSim$mesh, 
@@ -106,6 +110,54 @@ drSim$spdf@data %>%
     geom_point(aes(x=x, y=y, fill=NULL), data=simPolyDF, size=.1, alpha=.3)
 
 
+subPointDF <- filter(simPolyDF, urban == 0)
+subPolyDF <- filter(simPolyDF, urban == 1)
 modelPoint <- runFieldModel(drSim, simPolyDF, verbose = T, moption = 0)
-mpCI <- list(model1 = simulateFieldCI(drSim, modelPoint))
-ggFieldEst(drSim, mpCI, TRUE)
+subModelPoint <- runFieldModel(drSim, subPointDF, verbose = T, moption = 0)
+mpCI <- list(
+    model1 = simulateFieldCI(drSim, modelPoint),
+    model2 = simulateFieldCI(drSim, subModelPoint))
+
+ggFieldEst(drSim, mpCI, F)
+ggFieldEst(drSim, mpCI, T)
+
+inputs <- buildModelInputs(
+  drSim, 
+  subPointDF, 
+  polyDF=subPolyDF)
+
+inputs$Data$AprojPoly <- Matrix::Matrix(
+  0,
+  nrow = nrow(drSim$spdf@data),
+  ncol = length(unique(subPolyDF$strat)),
+  sparse = T)
+
+for(i in 1:length(unique(subPolyDF$strat))){
+  s <- unique(subPolyDF$strat)[i]
+  subDF <- filter(drSim$spdf@data, strat == s)
+  idx <- subDF$id + 1
+  inputs$Data$AprojPoly[idx, i] <- subDF$popW
+}
+
+inputs$Data$idPoly <- as.numeric(as.factor(subPolyDF$polyid)) - 1
+
+verbose <- T
+model <- "PointPolygon2"
+compile("~/Documents/Test/PointPolygon2.cpp")
+dyn.load(dynlib("~/Documents/Test/PointPolygon2"))
+symbolic <- TRUE
+control = list(eval.max = 10000, iter.max = 10000)
+startTime <- Sys.time()
+Obj <- TMB::MakeADFun(data = inputs$Data, parameters = inputs$Params, 
+                      DLL = model, random = "z", silent = !verbose)
+Obj$env$tracemgc <- verbose
+Obj$env$inner.control$trace <- verbose
+if (symbolic) {
+  nah <- utils::capture.output(TMB::runSymbolicAnalysis(Obj))
+}
+Opt <- stats::nlminb(start = Obj$par, objective = Obj$fn, 
+                     gradient = Obj$gr, control = control)
+sdrep <- TMB::sdreport(Obj, getJointPrecision = TRUE)
+runtime <- Sys.time() - startTime
+modelMix <- list(obj = Obj, opt = Opt, runtime = runtime, sd = sdrep, 
+     moption = moption, stack = NULL)

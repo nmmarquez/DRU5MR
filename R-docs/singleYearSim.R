@@ -30,7 +30,7 @@ drSim <- list()
 drSim$mesh <- INLA::inla.mesh.2d(
     loc=bbCoords(spDF), 
     offset = 1.,
-    max.edge = c(.3, .6))
+    max.edge = c(.1, .2))
 
 drSim$AprojField <- INLA::inla.spde.make.A(
     mesh=drSim$mesh, 
@@ -114,6 +114,9 @@ subPointDF <- filter(simPolyDF, urban == 0)
 subPolyDF <- filter(simPolyDF, urban == 1)
 modelPoint <- runFieldModel(drSim, simPolyDF, verbose = T, moption = 0)
 subModelPoint <- runFieldModel(drSim, subPointDF, verbose = T, moption = 0)
+
+save.image(file = "~/Documents/Test/intermediate.Rdata")
+
 mpCI <- list(
     model1 = simulateFieldCI(drSim, modelPoint),
     model2 = simulateFieldCI(drSim, subModelPoint))
@@ -159,5 +162,40 @@ Opt <- stats::nlminb(start = Obj$par, objective = Obj$fn,
                      gradient = Obj$gr, control = control)
 sdrep <- TMB::sdreport(Obj, getJointPrecision = TRUE)
 runtime <- Sys.time() - startTime
-modelMix <- list(obj = Obj, opt = Opt, runtime = runtime, sd = sdrep, 
-     moption = moption, stack = NULL)
+modelMix <- list(obj = Obj, opt = Opt, runtime = runtime, 
+     moption = 0, stack = NULL, sd=sdrep)
+
+
+save.image("~/Documents/DRU5MR/data/testRun.Rdata")
+
+mpCI <- list(
+  allPoints = simulateFieldCI(drSim, modelPoint),
+  censoredPoints = simulateFieldCI(drSim, subModelPoint),
+  mixtureModel = simulateFieldCI(drSim, modelMix))
+
+ggFieldEst(drSim, mpCI, F)
+
+ggFieldEst(drSim, mpCI, F) +
+  geom_point(aes(x=x, y=y, fill=NULL), data=simPolyDF, size=.01, alpha=.1)
+
+ggFieldEst(drSim, mpCI, T) +
+  geom_point(aes(x=x, y=y, fill=NULL), data=simPolyDF, size=.01, alpha=.1)
+
+ggFieldEst(drSim, mpCI, F) +
+  geom_point(aes(x=x, y=y, fill=NULL), data=subPointDF, size=.15, alpha=.2)
+
+ggFieldEst(drSim, mpCI, T) +
+  geom_point(aes(x=x, y=y, fill=NULL), data=subPointDF, size=.15, alpha=.2)
+
+
+sapply(mpCI, function(x){
+  sqrt(mean((x$mu - x$trueValue)^2))
+})
+
+sapply(mpCI, function(x){
+  mean(x$lwr <= x$trueValue  & x$upr >= x$trueValue)
+})
+
+sapply(mpCI, function(x){
+  mean(x$upr - x$lwr)
+})

@@ -2,9 +2,10 @@
 # This script takes data from DHS 2007 & 2013 and MICS 2014 and combines them
 # into a single data set. In addition we create as raster file with rural and
 # urban distinctions as pulled from the 2010 census. 
-
+.libPaths(c("~/R3.6/", .libPaths()))
 rm(list=ls())
 set.seed(123)
+library(Rcpp)
 library(haven)
 library(rgdal)
 library(sp)
@@ -13,7 +14,10 @@ library(PointPolygon)
 library(rgeos)
 library(raster)
 library(tidyverse)
-library(Rcpp)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
 
 years <- 2000:2015
 ageGroups <- c(0, NN=1/12, PNN1=1/2, PNN2=1, `1yr`=2, `2yr`=3, `3yr`=4, `4yr`=5)
@@ -225,7 +229,8 @@ micsDF <- bind_rows(lapply(1:nrow(DF), function(i){
             age_group = allLevels,
             strat = sigDF$strat,
             year = as.numeric(sigDF$`Year of Birth`) + unname(addLevels),
-            psu = sigDF$PSU
+            psu = sigDF$PSU,
+            weight = sigDF$wmweight
         )
     }
     else{
@@ -238,13 +243,14 @@ micsDF <- bind_rows(lapply(1:nrow(DF), function(i){
             strat = sigDF$strat,
             year = as.numeric(sigDF$`Year of Birth`) + 
                 unname(addLevels[subLevels]),
-            psu = sigDF$PSU
+            psu = sigDF$PSU,
+            weight = sigDF$wmweight
         )
     }
     expDF})) %>%
-    select(-id) %>%
+    dplyr::select(-id) %>%
     group_by(age_group, year, strat, psu) %>%
-    summarize(N=n(), died=sum(died)) %>%
+    summarize(N=n(), died=sum(died), weight=sum(weight)) %>%
     mutate(lat=NA, long=NA, source="MICS_2014") %>%
     ungroup %>%
     filter(year >= min(years) & year <= 2014) %>%
@@ -263,7 +269,7 @@ sources <- c(
 ihmeDF <- "./data-extended/DRdata.csv" %>%
     read_csv(col_types="ccdcidcddccddidcdc") %>%
     mutate(strat=NA) %>%
-    select(
+    dplyr::select(
         age_group=ab, year, strat, psu=geo_unit, 
         N, died, lat=latnum, long=longnum, source=Title) %>%
     filter(source %in% sources)
@@ -282,7 +288,7 @@ spDF$urban <- spDF$ZONA == "1"
 # the last step is to convert to a sufficiently detailed raster
 # we will then convert this raster to point data as used in the PointPolygon
 # package.
-rbase <- raster(ncol=600, nrow=600)
+rbase <- raster(ncol=100, nrow=100)
 extent(rbase) <- extent(spDF)
 rasterRegSP <- rasterize(spDF, rbase, 'REG')
 values(rasterRegSP)[is.na(values(rasterRegSP))] <- -1
@@ -300,7 +306,7 @@ fullRaster$strat <- paste0(
 
 fullDF <- as_tibble(sp::coordinates(fullRaster)) %>%
     rename(long=x, lat=y) %>%
-    bind_cols(select(fullRaster@data, reg, urban, id)) %>%
+    bind_cols(dplyr::select(fullRaster@data, reg, urban, id)) %>%
     mutate(strat = paste0(sprintf("%02d", reg), "_", 2-urban)) %>%
     mutate(long=round(long, 5), lat=round(lat, 5)) %>%
     filter(reg >= 0 & urban >= 0)
@@ -310,12 +316,12 @@ fullDF <- as_tibble(sp::coordinates(fullRaster)) %>%
 
 dhsClusterDF <- ihmeDF %>%
     filter(!grepl("Cluster Survey", ihmeDF$source)) %>%
-    select(psu, lat, long) %>%
+    dplyr::select(psu, lat, long) %>%
     unique %>%
     mutate(id=find_closest(
-        as.matrix(select(. , long, lat)),
+        as.matrix(dplyr::select(. , long, lat)),
         as.matrix(fullDF[,1:2]))) %>%
-    select(psu, id)
+    dplyr::select(psu, id)
 
 idSubs <- mapply(function(i, j){
     suDF <- subset(fullRaster@data, strat == paste0(sprintf("%02d", i), "_", j))
@@ -333,7 +339,7 @@ polyDF <- tibble(
 pointDF <- ihmeDF %>%
     filter(!grepl("Cluster Survey", ihmeDF$source)) %>%
     left_join(dhsClusterDF, by="psu") %>%
-    left_join(select(fullDF, id, urban), by="id") %>%
+    left_join(dplyr::select(fullDF, id, urban), by="id") %>%
     mutate(point=TRUE) 
 
 fullDF %>%
@@ -365,27 +371,27 @@ wgetRasterYear <- function(year, loc="DOM"){
 }
 
 
-if(!file.exists("./data-extended/rasterYearList.Rds")){
-    rasterYearList <- lapply(years, wgetRasterYear)
-    saveRDS(rasterYearList, "./data-extended/rasterYearList.Rds")
+if(!file.exists("./data-extended/rasterYearListSingle.Rds")){
+    rasterYearList <- lapply(2010, wgetRasterYear)
+    #saveRDS(rasterYearList, "./data-extended/rasterYearList.Rds")
+    saveRDS(rasterYearList, "./data-extended/rasterYearListSingle.Rds")
 }
 
-rasterYearList <- read_rds("./data-extended/rasterYearList.Rds")
-names(rasterYearList) <- years
+#rasterYearList <- read_rds("./data-extended/rasterYearList.Rds")
+rasterYearList <- read_rds("./data-extended/rasterYearListSingle.Rds")
+names(rasterYearList) <- 2010
 
-popYearDFList <- lapply(years, function(x) NULL)
-names(popYearDFList) <- as.character(years)
+popYearDFList <- lapply(2010, function(x) NULL)
+names(popYearDFList) <- as.character(2010)
 
-# the number of filled points dont match the urban rural rasters so this isnt
-# going to work, We need to change this step
-for(y in years){
+for(y in 2010){
     rDF <- rasterYearList[[as.character(y)]]
     values(rDF)[is.na(values(rDF))] <- -1
     rDF <- as(rDF, "SpatialPointsDataFrame")
     rDF$Population <- rDF$layer
     rDF$layer <- NULL
     rDF$id <- 1:nrow(rDF@data)
-    rDF@data <- right_join(rDF@data, select(fullDF, id, strat)) %>%
+    rDF@data <- right_join(rDF@data, dplyr::select(fullDF, id, strat)) %>%
         mutate(Population=ifelse(Population < 0, 0, Population)) %>%
         group_by(strat) %>%
         mutate(popW=Population/sum(Population)) %>%
@@ -398,13 +404,13 @@ for(y in years){
 yearWDF <- bind_rows(lapply(popYearDFList, function(x)x@data)) %>% 
     arrange(year, id)
 
-yearWMat <- matrix(
-    c(yearWDF$popW), 
-    nrow=nrow(popYearDFList[[1]]@data), 
-    ncol = length(years))
+#yearWMat <- matrix(
+#    c(yearWDF$popW), 
+#    nrow=nrow(popYearDFList[[1]]@data), 
+#    ncol = length(years))
 
 yearWDF %>%
-    filter(year == 2014) %>%
+    filter(year == 2010) %>%
     right_join(fullDF) %>%
     ggplot(aes(long, lat, fill=Population)) +
     geom_raster() +
